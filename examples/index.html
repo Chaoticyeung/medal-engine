@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>勋章引擎示例</title>
+<style>
+html, body { margin: 0; height: 100%; background: #111; color: #ccc; font: 14px/1.5 system-ui, "Noto Sans SC", sans-serif; }
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; touch-action: none; }
+#bar { position: fixed; left: 16px; right: 16px; bottom: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+button { background: #222; color: #ccc; border: 0.5px solid #3a3a3a; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button[aria-pressed="true"] { background: #3a3a3a; color: #eee; }
+</style>
+<!-- clipper-lib 是全局脚本；three 走 importmap。npm install 以后从仓库根目录起一个静态服务器打开 /examples/ -->
+<script src="../node_modules/clipper-lib/clipper.js"></script>
+<script type="importmap">{"imports":{"three":"../node_modules/three/build/three.module.js"}}</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="bar"></div>
+<script type="module">
+// 拖动转，双击翻面。下面按钮换示例、配色和金属
+import { createBadge } from '../src/index.js';
+
+const EXAMPLES = [
+  ['山与日', './styles/studio.js', './designs/sun-mountain.js'],
+  ['树', './styles/coin.js', './designs/tree-coin.js'],
+];
+const stage = document.getElementById('stage'), bar = document.getElementById('bar');
+let badge;
+
+function buttons(items, current, pick) {
+  const group = document.createElement('div');
+  group.style.display = 'contents';
+  for (const name of items) {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.setAttribute('aria-pressed', name === current);
+    b.onclick = () => { pick(name); for (const x of group.children) x.setAttribute('aria-pressed', x === b); };
+    group.append(b);
+  }
+  return group;
+}
+
+async function show(name) {
+  const [, s, d] = EXAMPLES.find(e => e[0] === name);
+  const [style, design] = await Promise.all([s, d].map(u => import(u).then(m => m.default)));
+  badge?.dispose();
+  badge = await createBadge(stage, { style, design });
+  bar.replaceChildren(
+    buttons(EXAMPLES.map(e => e[0]), name, show),
+    buttons(style.swatches, badge.state.enamel, n => badge.setEnamel(n)),
+    buttons(Object.keys(style.metals), badge.state.metal, n => badge.setMetal(n)),
+  );
+}
+show(EXAMPLES[0][0]);
+</script>
+</body>
+</html>

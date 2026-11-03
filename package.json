@@ -1,0 +1,27 @@
+{
+  "name": "medal-engine",
+  "version": "0.1.0",
+  "description": "WebGL medal and badge renderer: enamel, wire, relief, ceramic, plastic and embroidery, driven by plain style and design modules.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core.js",
+    "./worker": "./src/worker.js",
+    "./offscreen": "./src/offscreen.js",
+    "./geom2d": "./src/geom2d.js"
+  },
+  "files": ["src"],
+  "license": "AGPL-3.0-only",
+  "peerDependencies": {
+    "three": "0.170.0",
+    "clipper-lib": "6.4.2"
+  },
+  "devDependencies": {
+    "three": "0.170.0",
+    "clipper-lib": "6.4.2"
+  },
+  "scripts": {
+    "serve": "python3 tools/serve.py 8000"
+  }
+}

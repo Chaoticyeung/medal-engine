@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>勋章引擎回归</title>
+<style>
+html, body { margin: 0; background: #111; color: #ddd; font: 13px/1.6 system-ui, "Noto Sans SC", sans-serif; }
+#stage { width: 800px; height: 800px; }
+main { padding: 16px; }
+table { border-collapse: collapse; }
+td, th { padding: 2px 12px 2px 0; text-align: left; font-variant-numeric: tabular-nums; }
+.bad { color: #ff6369; }
+</style>
+<script>
+// 回归页。参数：
+//   mode=save|compare  save 把这次的截图存进浏览器（IndexedDB），compare 和存过的那一份逐像素比；
+//   set=名字           存在哪一份下面，默认 baseline；
+//   cases=地址          列出要截的风格和图案的模块，默认 ./cases.js；
+//   engine=地址         引擎入口，默认 ../src/index.js（比对改前改后时，可以把改前的引擎另放一处，用这个参数指过去）；
+//   three=、clipper=    three.js 和 clipper-lib 的地址，默认 npm 装在 ../node_modules 里的那份。
+// 每个风格截正面、0.436、π 三个转角，再换成最后一个配色和最后一种金属截一张 0.436。
+// 动画时间钉死（每帧的时间戳都一样，勋章不会自己转），Math.random 每个风格开始前重设同一个种子。
+const Q = new URLSearchParams(location.search);
+const im = document.createElement('script');
+im.type = 'importmap';
+im.textContent = JSON.stringify({ imports: { three: new URL(Q.get('three') || '../node_modules/three/build/three.module.js', location.href).href } });
+document.currentScript.after(im);
+
+let seed = 0;
+window.reseed = () => { seed = 12345; };
+Math.random = () => {
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+const raf = window.requestAnimationFrame.bind(window);
+window.nextFrame = () => new Promise(r => raf(r));
+window.requestAnimationFrame = cb => raf(() => cb(1000));
+// 记下整个回归过程中编译过的每一段着色器源码（空白合并成一个空格）。改前改后这个集合一样，画面就不会因为着色器变
+window.shaderSources = new Set();
+const shaderSource = WebGL2RenderingContext.prototype.shaderSource;
+WebGL2RenderingContext.prototype.shaderSource = function (shader, src) {
+  shaderSources.add(src.replace(/\s+/g, ' '));
+  return shaderSource.call(this, shader, src);
+};
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<main><p id="status">准备中</p><table id="out"></table></main>
+<script type="module">
+const status = document.getElementById('status'), out = document.getElementById('out');
+const mode = Q.get('mode') || 'compare', set = Q.get('set') || 'baseline';
+const ANGLES = [['0', 0], ['0.436', 0.436], ['3.14159', Math.PI]];
+
+const db = await new Promise((ok, err) => {
+  const r = indexedDB.open('medal-engine-regress', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('shots');
+  r.onsuccess = () => ok(r.result); r.onerror = () => err(r.error);
+});
+const idb = (how, ...args) => new Promise((ok, err) => {
+  const r = db.transaction('shots', how === 'get' ? 'readonly' : 'readwrite').objectStore('shots')[how](...args);
+  r.onsuccess = () => ok(r.result); r.onerror = () => err(r.error);
+});
+
+async function pixels(blob) {
+  const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+  const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d');
+  g.drawImage(bmp, 0, 0);
+  return g.getImageData(0, 0, bmp.width, bmp.height).data;
+}
+// 两张图字节完全相同就是逐像素相同；不同才解码比 RGB，报最大差和差超过 0、20 的像素数
+async function diff(a, b) {
+  const [x, y] = await Promise.all([a.arrayBuffer(), b.arrayBuffer()]);
+  if (x.byteLength === y.byteLength && new Uint8Array(x).every((v, i) => v === new Uint8Array(y)[i])) return { max: 0, n0: 0, n20: 0 };
+  const [p, q] = await Promise.all([pixels(a), pixels(b)]);
+  if (p.length !== q.length) return { max: 255, n0: -1, n20: -1, note: '尺寸不同' };
+  let max = 0, n0 = 0, n20 = 0;
+  for (let i = 0; i < p.length; i += 4) {
+    const d = Math.max(Math.abs(p[i] - q[i]), Math.abs(p[i + 1] - q[i + 1]), Math.abs(p[i + 2] - q[i + 2]));
+    if (d > max) max = d;
+    if (d > 0) n0++;
+    if (d > 20) n20++;
+  }
+  return { max, n0, n20 };
+}
+
+const digest = async text => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].slice(0, 8).map(v => v.toString(16).padStart(2, '0')).join('');
+
+const row = (cells, bad) => {
+  const tr = out.insertRow();
+  if (bad) tr.className = 'bad';
+  for (const c of cells) tr.insertCell().textContent = c;
+};
+row(['风格', '截图', mode === 'save' ? '已存' : '最大差', '差 > 0 的像素', '差 > 20 的像素']);
+
+try {
+  await new Promise((ok, err) => {
+    const s = document.createElement('script');
+    s.src = new URL(Q.get('clipper') || '../node_modules/clipper-lib/clipper.js', location.href).href;
+    s.onload = ok; s.onerror = () => err(new Error('clipper-lib 没加载上：' + s.src));
+    document.head.append(s);
+  });
+  const { createBadge } = await import(new URL(Q.get('engine') || '../src/index.js', location.href).href);
+  const casesUrl = new URL(Q.get('cases') || './cases.js', location.href).href;
+  const only = Q.get('only')?.split(',');
+  const cases = (await import(casesUrl)).default.filter(c => !only || only.includes(c.name));
+  const stage = document.getElementById('stage');
+  const results = [];
+  for (const c of cases) {
+    status.textContent = `${c.name}（${cases.indexOf(c) + 1}/${cases.length}）`;
+    const [style, design] = await Promise.all([c.style, c.design].map(u => import(new URL(u, casesUrl).href).then(m => m.default)));
+    reseed();
+    const badge = await createBadge(stage, { style, design });
+    const shots = [];
+    const take = async name => {
+      for (let i = 0; i < 4; i++) await nextFrame();
+      shots.push([name, await new Promise(ok => badge.renderer.domElement.toBlob(ok, 'image/png'))]);
+    };
+    for (const [name, a] of ANGLES) { badge.setRotation(a); await take(name); }
+    if (style.swatches?.length) badge.setEnamel(style.swatches.at(-1));
+    const metals = Object.keys(style.metals || {});
+    if (metals.length) badge.setMetal(metals.at(-1));
+    badge.setRotation(0.436);
+    await take('换色 0.436');
+    badge.dispose();
+    for (const [name, blob] of shots) {
+      const key = `${set}/${c.name}/${name}`;
+      if (mode === 'save') {
+        await idb('put', blob, key);
+        row([c.name, name, '是']);
+        results.push({ case: c.name, shot: name, saved: true });
+        continue;
+      }
+      const base = await idb('get', key);
+      const d = base ? await diff(blob, base) : { max: NaN, n0: NaN, n20: NaN, note: '没有基准' };
+      row([c.name, name, d.note || d.max, d.n0, d.n20], !(d.max === 0));
+      results.push({ case: c.name, shot: name, ...d });
+    }
+    window.__shots = { ...(window.__shots || {}), ...Object.fromEntries(shots.map(([n, b]) => [`${c.name}/${n}`, b])) };
+  }
+  const shaders = (await Promise.all([...shaderSources].map(digest))).sort();
+  const sk = `${set}/shaders${only ? '/' + only.join(',') : ''}`;
+  if (mode === 'save') await idb('put', shaders, sk);
+  else {
+    const base = await idb('get', sk) || [];
+    const gone = base.filter(h => !shaders.includes(h)).length, added = shaders.filter(h => !base.includes(h)).length;
+    row(['全部', '着色器', gone || added ? `少了 ${gone} 段、多了 ${added} 段` : '相同', `${shaders.length} 段`], !!(gone || added) || !base.length);
+    results.push({ case: '全部', shot: '着色器', same: !gone && !added && base.length > 0, count: shaders.length, gone, added });
+  }
+  const bad = results.filter(r => r.shot === '着色器' ? !r.same : !(r.saved || r.max === 0));
+  status.textContent = mode === 'save' ? `存好了 ${results.length} 张（${set}）` : bad.length ? `${bad.length} 项不一致` : `全部一致（和 ${set} 比，最大差 0）`;
+  window.__result = results;
+} catch (e) {
+  status.textContent = String(e.stack || e);
+  status.className = 'bad';
+  window.__error = String(e.stack || e);
+}
+window.__done = true;
+</script>
+</body>
+</html>

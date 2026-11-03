@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>后台线程示例</title>
+<style>
+html, body { margin: 0; height: 100%; background: #111; }
+#stage { position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module">
+// 勋章在后台线程里算和画（examples/badge-worker.js），页面只转发指针事件。浏览器不支持时退回 index.html 那种主线程的用法
+import { canRunInWorker, createWorkerBadge } from '../src/offscreen.js';
+
+if (!canRunInWorker()) location.replace('./index.html');
+else {
+  const badge = createWorkerBadge(document.getElementById('stage'), {
+    worker: new Worker('./badge-worker.js', { type: 'module' }),
+    three: '../node_modules/three/build/three.module.js',
+    clipper: '../node_modules/clipper-lib/clipper.js',
+  });
+  const info = await badge.show({ id: 'sun', style: './styles/studio.js', design: './designs/sun-mountain.js' });
+  window.badge = badge;
+  console.log('配色', info.swatches.map(s => s[0]), '金属', info.metals, '当前', info.state);
+}
+</script>
+</body>
+</html>
